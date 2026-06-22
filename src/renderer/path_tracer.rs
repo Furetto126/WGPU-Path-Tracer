@@ -7,7 +7,7 @@ use wgpu::{
 use crate::{renderer::GpuContext, scene::Camera, texture::Texture};
 
 #[derive(Debug, Clone)]
-struct PathTracerBindGroups {
+struct PathTracerShaderBindGroups {
     // Compute bind groups
     // -------------------
     // @group(0)
@@ -26,14 +26,14 @@ pub struct PathTracer {
     compute_pipeline: ComputePipeline,
     display_pipeline: RenderPipeline,
 
-    bind_groups: PathTracerBindGroups,
+    shader_bind_groups: PathTracerShaderBindGroups,
 
     result_texture: Texture,
     texture_sampler: Sampler,
 }
 
 impl PathTracer {
-    pub fn new(ctx: &GpuContext, compute_shader: ShaderModule, display_shader: ShaderModule, camera: &Camera) -> Self {
+    pub fn new(ctx: &GpuContext, compute_shader: ShaderModule, display_shader: ShaderModule, additional_bgls: Vec<&BindGroupLayout>) -> Self {
         // Shared Output/Input Texture
         // ---------------------------
         let texture_sampler = ctx.device.create_sampler(&SamplerDescriptor {
@@ -56,15 +56,21 @@ impl PathTracer {
             TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING
         );
 
-        let bind_groups = Self::generate_texture_bind_group(ctx, &result_texture, &texture_sampler);
+        let shader_bind_groups = Self::generate_texture_bind_group(ctx, &result_texture, &texture_sampler);
+
+        let total_bind_groups: Vec<Option<&BindGroupLayout>> = std::iter::once(&shader_bind_groups.compute_bind_group_layout)
+                                    .chain(additional_bgls.into_iter())
+                                    .map(|bgl| Some(bgl))
+                                    .collect();                               
 
         // Compute Shader setup
         // --------------------
         let compute_pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            bind_group_layouts: &[
-                Some(&bind_groups.compute_bind_group_layout),
-                Some(&camera.camera_bind_group_layout)
-            ],
+            /*bind_group_layouts: &[
+                Some(&shader_bind_groups.compute_bind_group_layout),
+                //Some(&camera.camera_bind_group_layout)
+            ],*/
+            bind_group_layouts: &total_bind_groups,
             ..Default::default()
         });
         let compute_pipeline = ctx.device.create_compute_pipeline(&ComputePipelineDescriptor {
@@ -82,7 +88,7 @@ impl PathTracer {
         let display_pipeline_layout =
             ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[Some(&bind_groups.display_bind_group_layout)],
+                bind_group_layouts: &[Some(&shader_bind_groups.display_bind_group_layout)],
                 immediate_size: 0
             });
 
@@ -143,13 +149,13 @@ impl PathTracer {
         Self {
             compute_pipeline,
             display_pipeline,
-            bind_groups,
+            shader_bind_groups,
             result_texture,
             texture_sampler,
         }
     }
 
-    pub fn render(&mut self, ctx: &GpuContext, camera: &Camera) -> anyhow::Result<()> {
+    pub fn render(&mut self, ctx: &GpuContext, additional_bind_groups: Vec<&BindGroup>) -> anyhow::Result<()> {
         let old_size = self.result_texture.get_size();
         let new_size = Extent3d {
             width: ctx.size.width,
@@ -162,7 +168,7 @@ impl PathTracer {
                 ctx, new_size
             );
 
-            self.bind_groups = Self::generate_texture_bind_group(ctx, &self.result_texture, &self.texture_sampler);
+            self.shader_bind_groups = Self::generate_texture_bind_group(ctx, &self.result_texture, &self.texture_sampler);
         } 
 
         // Get SurfaceTexture and TextureView to render on.
@@ -183,8 +189,10 @@ impl PathTracer {
             path_tracing_pass.set_pipeline(&self.compute_pipeline);
 
             // Set bind groups needed in rendering by the Compute Shader.
-            path_tracing_pass.set_bind_group(0, &self.bind_groups.compute_bind_group, &[]);
-            path_tracing_pass.set_bind_group(1, &camera.camera_bind_group, &[]);
+            path_tracing_pass.set_bind_group(0, &self.shader_bind_groups.compute_bind_group, &[]);
+            for (i, bg) in additional_bind_groups.into_iter().enumerate() {
+                path_tracing_pass.set_bind_group(1+i as u32, bg, &[]);
+            }
 
             let wg_x = self.result_texture.get_size().width.div_ceil(8);
             let wg_y = self.result_texture.get_size().height.div_ceil(8); 
@@ -219,7 +227,7 @@ impl PathTracer {
             });
 
             display_pass.set_pipeline(&self.display_pipeline);
-            display_pass.set_bind_group(0, &self.bind_groups.display_bind_group, &[]);
+            display_pass.set_bind_group(0, &self.shader_bind_groups.display_bind_group, &[]);
             display_pass.set_vertex_buffer(0, FULLSCREEN_VERTEX_BUFFER.get().unwrap().slice(..));
             display_pass.set_index_buffer(FULLSCREEN_INDEX_BUFFER.get().unwrap().slice(..), wgpu::IndexFormat::Uint16);
             display_pass.draw_indexed(0..QUAD_INDICES.len() as u32, 0, 0..1);
@@ -231,7 +239,7 @@ impl PathTracer {
         Ok(())
     }
 
-    fn generate_texture_bind_group(ctx: &GpuContext, texture: &Texture, texture_sampler: &Sampler) -> PathTracerBindGroups {
+    fn generate_texture_bind_group(ctx: &GpuContext, texture: &Texture, texture_sampler: &Sampler) -> PathTracerShaderBindGroups {
         let compute_bind_group_layout = ctx.device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Compute Bind Group Layout"),
             entries: &[
@@ -296,7 +304,7 @@ impl PathTracer {
             ],
         });
 
-        PathTracerBindGroups {
+        PathTracerShaderBindGroups {
             compute_bind_group,
             compute_bind_group_layout,
             display_bind_group,

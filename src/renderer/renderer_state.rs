@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
+use wesl::include_wesl;
 use wgpu::include_wgsl;
 use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode, window::Window};
 
-use crate::{scene::Camera, renderer::GpuContext, renderer::PathTracer};
+use crate::{renderer::{GpuContext, PathTracer, sobol_generator::SobolDirectionsBindGroup}, scene::Camera};
 
 pub struct RendererState {
     gpu_context: GpuContext,
     camera: Camera,
     path_tracer: PathTracer,
+    sobol_dirs: SobolDirectionsBindGroup,
 }
 
 impl RendererState {
@@ -22,20 +24,30 @@ impl RendererState {
             gpu_context.size.width as f32 / gpu_context.size.height as f32 
         );
 
-        let compute_shader = gpu_context.device.create_shader_module(include_wgsl!("../shaders/path_tracer.wgsl"));
+
+        let compute_shader = gpu_context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_wesl!("path_tracer").into()),
+        });
         let display_shader = gpu_context.device.create_shader_module(include_wgsl!("../shaders/display.wgsl"));
+
+        let sobol_dirs = SobolDirectionsBindGroup::generate_sobol_directions_buffer(&gpu_context);
 
         let path_tracer = PathTracer::new(
             &gpu_context,
             compute_shader,
             display_shader,
-            &camera
+            vec![
+                &camera.camera_bind_group_layout,
+                &sobol_dirs.bind_group_layout
+            ]
         );
 
         Ok(Self {
             gpu_context,
             camera,    
-            path_tracer
+            path_tracer,
+            sobol_dirs
         })
     }
 
@@ -62,6 +74,11 @@ impl RendererState {
         }
             
         // RENDER!
-        self.path_tracer.render(&self.gpu_context, &self.camera)
+        self.path_tracer.render(
+            &self.gpu_context,
+            vec![
+                &self.camera.camera_bind_group,
+                &self.sobol_dirs.bind_group
+            ])
     }
 }
