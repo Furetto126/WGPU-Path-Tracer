@@ -47,7 +47,7 @@ const SOBOL_PARAMS: [SobolParams; NUM_DIMENSIONS] = [
 ];
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, PartialEq)]
 struct SobolDirections {
     pub dirs: [u32; NUM_DIMENSIONS2]
 }
@@ -83,43 +83,11 @@ fn generate_sobol_directions() -> SobolDirections {
     SobolDirections { dirs: result }
 }
 
-#[derive(Debug, Clone)]
-pub struct SobolDirectionsBindGroup {
-    pub bind_group_layout: wgpu::BindGroupLayout,
-    pub bind_group: wgpu::BindGroup
-}
-
-impl SobolDirectionsBindGroup {
-    pub fn generate_sobol_directions_buffer(ctx: &GpuContext) -> SobolDirectionsBindGroup {
-        let sobol_dirs_uniform = generate_sobol_directions();
-        let sobol_dirs_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Sobol Directions Buffer"),
-            contents: bytemuck::cast_slice(&[sobol_dirs_uniform]),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let sobol_dirs_bgl = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Sobol Directions Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }
-            ]
-        });
-
-        let sobol_dirs_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Sobol Directions Bind Group"),
-            layout: &sobol_dirs_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: sobol_dirs_buffer.as_entire_binding() }],
-        });
-
-        Self { bind_group_layout: sobol_dirs_bgl, bind_group: sobol_dirs_bind_group }
-    } 
-}
+pub fn generate_sobol_directions_buffer(ctx: &GpuContext) -> wgpu::Buffer {
+    let sobol_dirs_uniform = generate_sobol_directions();
+    ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Sobol Directions Buffer"),
+        contents: bytemuck::cast_slice(&[sobol_dirs_uniform]),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    })
+} 

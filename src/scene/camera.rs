@@ -57,7 +57,7 @@ impl Camera {
         };
         
         let camera_controller = CameraController::new(0.2);
-        let camera_uniform = CameraUniform::new();
+        let camera_uniform = CameraUniform::new(&transform, &options);
 
         let camera_buffer = ctx.device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
@@ -106,14 +106,14 @@ impl Camera {
     }
 
     pub fn update(&mut self, ctx: &GpuContext) {
-        if self.camera_controller.update_transform(&mut self.transform) {
+        //if self.camera_controller.update_transform(&mut self.transform) {
             self.camera_uniform.update(&self.transform, &self.options);
 
             ctx.queue.write_buffer(
                 &self.camera_buffer,
                 0,
                 bytemuck::cast_slice(&[self.camera_uniform]));
-        }
+        //}
     }
 }
 
@@ -126,25 +126,29 @@ pub struct CameraUniform {
 }
 
 impl CameraUniform {
-    pub fn new() -> Self {
+    pub fn new(transform: &CameraTransform, options: &CameraOptions) -> Self {
         Self {
-            inv_view_proj: cgmath::Matrix4::identity().into(),
-            cam_pos: [0.0, 0.0, 0.0],
+            inv_view_proj: Self::generate_inv_view_proj(transform, options),
+            cam_pos: transform.position.into(),
             _pad: 0.0
         }
     }
 
     pub fn update(&mut self, transform: &CameraTransform, options: &CameraOptions) {
+        self.inv_view_proj = Self::generate_inv_view_proj(transform, options);
+        self.cam_pos = transform.position.into();
+    }
+
+    fn generate_inv_view_proj(transform: &CameraTransform, options: &CameraOptions) -> [[f32; 4]; 4] {
         let view = Matrix4::look_to_rh(transform.position, transform.front, transform.up);
         let projection = perspective(Deg(options.fov), options.aspect_ratio, options.znear, options.zfar);
         let view_proj = Self::OPENGL_TO_WGPU_MATRIX * projection * view;
 
         if !view_proj.is_invertible() {
-            self.inv_view_proj = cgmath::Matrix4::identity().into();
-            return;
+            return cgmath::Matrix4::identity().into();
         }
 
-        self.inv_view_proj = view_proj.invert().unwrap().into();
+        return view_proj.invert().unwrap().into();
     }
 
     const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::from_cols(

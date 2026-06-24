@@ -1,6 +1,8 @@
-import package::constants::{MAX_U32, EPSILON};
-import package::primitives::{Sphere, Triangle, Material};
-import package::intersection::{closest_intersection_fixed};
+import package::constants::{MAX_U32, EPSILON, INV_PI};
+import package::scene::{
+    Sphere, Triangle, PbrMaterial, materials
+};
+import package::intersection::{closest_intersection};
 import package::brdf;
 import package::random::{PCG_Hash, random_float};
 
@@ -16,23 +18,23 @@ struct Ray {
 /// Then we compute the throughput:
 ///     (f_r(w_i, w_o) / p(w_i)) * L_i(w_i) * cos(theta)
 fn trace_path(ray_in: Ray, pixel_seed: u32, sobol_index: u32, sobol_dim: u32) -> vec3f {
-    const MAX_BOUNCES = 1000u;
+    const MAX_BOUNCES = 10000u;
 
     var throughput = vec3f(1.0);
     var color = vec3f(0.0);
     var ray = ray_in;
-
+    
     var sobol_dimension = sobol_dim;
     var local_seed = pixel_seed ^ PCG_Hash(u32(abs(ray.direction.x+ray.direction.y+ray.direction.z)*f32(MAX_U32)));
 
     for (var i = 0u; i < MAX_BOUNCES; i++) {
-        let sphere_hit = closest_intersection_fixed(ray);
-        if (!sphere_hit.hasHit) {
+        let hit = closest_intersection(ray);
+        if (!hit.hasHit) {
             color += throughput * environmentalLight(ray);
             break;
         }
 
-        let material = sphere_hit.material;
+        let material = materials[hit.material];
 
         // Accumulate emission
         color += throughput * material.emissive_factor;
@@ -42,7 +44,7 @@ fn trace_path(ray_in: Ray, pixel_seed: u32, sobol_index: u32, sobol_dim: u32) ->
         //      Weight = F * G2 / G1
         // but right now is more clear
         // ---------------------------
-        let normal = sphere_hit.normal;
+        let normal = hit.normal;
         let roughness = material.roughness_factor;
 
         let w_o = -ray.direction;
@@ -78,11 +80,20 @@ fn trace_path(ray_in: Ray, pixel_seed: u32, sobol_index: u32, sobol_dim: u32) ->
         let f0 = mix(vec3f(0.04), material.base_color_factor.xyz, material.metallic_factor); 
         let F = brdf::schlick_fresnel(max(dot(w_o, h), 0.0), f0);
 
-        let brdf = D * V * F;
+        let specular_brdf = D * V * F;
+
+        let albedo = material.base_color_factor.xyz;
+        let diffuse_brdf = albedo * INV_PI;
+
+        // Energy reflected specularly and diffusely
+        let kS = F;
+        let kD = (vec3f(1.0) - kS) * (1.0 - material.metallic_factor);
+
+        let brdf = (kD * diffuse_brdf) + specular_brdf;
 
         throughput *= brdf * cos_theta / pdf;
 
-        if i >= 3 {
+        if i >= 20 {
             let p = max(throughput.r, max(throughput.g, throughput.b));
         
             local_seed ^= PCG_Hash(local_seed);
@@ -91,7 +102,7 @@ fn trace_path(ray_in: Ray, pixel_seed: u32, sobol_index: u32, sobol_dim: u32) ->
             throughput /= p;
         }
 
-        ray.origin = sphere_hit.point + sphere_hit.normal*EPSILON;
+        ray.origin = hit.point + hit.normal*EPSILON;
         ray.direction = w_i;
     }
 

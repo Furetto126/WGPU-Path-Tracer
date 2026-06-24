@@ -3,7 +3,7 @@ import package::constants::INV_MAX_U32;
 struct SobolDirections {
     dirs: array<u32, 1024>
 }
-@group(2) @binding(0) var<storage, read> sobol: SobolDirections;
+@group(2) @binding(1) var<storage, read> sobol: SobolDirections;
 
 fn PCG_Hash(seed: u32) -> u32 {
     let state = seed * 747796405u + 2891336453u;

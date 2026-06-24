@@ -1,10 +1,10 @@
 use std::sync::OnceLock;
 
 use wgpu::{
-    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, ColorTargetState, ColorWrites, ComputePipeline, ComputePipelineDescriptor, Extent3d, FragmentState, MultisampleState, PipelineCompilationOptions, PrimitiveState, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModule, ShaderStages, TextureFormat::Rgba32Float, TextureUsages, VertexState, util::DeviceExt
+    BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource, BindingType, BlendState, Buffer, ColorTargetState, ColorWrites, ComputePipeline, ComputePipelineDescriptor, Extent3d, FragmentState, MultisampleState, PipelineCompilationOptions, PrimitiveState, RenderPipeline, RenderPipelineDescriptor, Sampler, SamplerDescriptor, ShaderModule, ShaderStages, TextureFormat::Rgba32Float, TextureUsages, VertexState, util::DeviceExt
 };
 
-use crate::{renderer::GpuContext, scene::Camera, texture::Texture};
+use crate::{renderer::GpuContext, texture::Texture};
 
 #[derive(Debug, Clone)]
 struct PathTracerShaderBindGroups {
@@ -28,14 +28,22 @@ pub struct PathTracer {
 
     shader_bind_groups: PathTracerShaderBindGroups,
 
+    accumulation_buffer: Buffer,
     result_texture: Texture,
     texture_sampler: Sampler,
 }
 
 impl PathTracer {
     pub fn new(ctx: &GpuContext, compute_shader: ShaderModule, display_shader: ShaderModule, additional_bgls: Vec<&BindGroupLayout>) -> Self {
-        // Shared Output/Input Texture
-        // ---------------------------
+        // Shared Output/Input Texture and Accumulation Buffer
+        // ---------------------------------------------------
+        let num_pixels = (ctx.size.width * ctx.size.height) as usize;
+        let accumulation_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Accumulation Buffer"),
+            contents: bytemuck::cast_slice(&vec![[0.0f32; 4]; num_pixels]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
+        });
+
         let texture_sampler = ctx.device.create_sampler(&SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -56,7 +64,7 @@ impl PathTracer {
             TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING
         );
 
-        let shader_bind_groups = Self::generate_texture_bind_group(ctx, &result_texture, &texture_sampler);
+        let shader_bind_groups = Self::generate_texture_bind_group(ctx, &result_texture, &accumulation_buffer, &texture_sampler);
 
         let total_bind_groups: Vec<Option<&BindGroupLayout>> = std::iter::once(&shader_bind_groups.compute_bind_group_layout)
                                     .chain(additional_bgls.into_iter())
@@ -66,10 +74,6 @@ impl PathTracer {
         // Compute Shader setup
         // --------------------
         let compute_pipeline_layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            /*bind_group_layouts: &[
-                Some(&shader_bind_groups.compute_bind_group_layout),
-                //Some(&camera.camera_bind_group_layout)
-            ],*/
             bind_group_layouts: &total_bind_groups,
             ..Default::default()
         });
@@ -150,26 +154,15 @@ impl PathTracer {
             compute_pipeline,
             display_pipeline,
             shader_bind_groups,
+            accumulation_buffer,
             result_texture,
             texture_sampler,
         }
     }
 
     pub fn render(&mut self, ctx: &GpuContext, additional_bind_groups: Vec<&BindGroup>) -> anyhow::Result<()> {
-        let old_size = self.result_texture.get_size();
-        let new_size = Extent3d {
-            width: ctx.size.width,
-            height: ctx.size.height,
-            depth_or_array_layers: 1,
-        };
-
-        if old_size != new_size {
-            self.result_texture.resize(
-                ctx, new_size
-            );
-
-            self.shader_bind_groups = Self::generate_texture_bind_group(ctx, &self.result_texture, &self.texture_sampler);
-        } 
+        // Idempotent
+        self.resize_canvas_if_changed(ctx);
 
         // Get SurfaceTexture and TextureView to render on.
         let (output, view) = match ctx.get_output_view() {
@@ -239,7 +232,41 @@ impl PathTracer {
         Ok(())
     }
 
-    fn generate_texture_bind_group(ctx: &GpuContext, texture: &Texture, texture_sampler: &Sampler) -> PathTracerShaderBindGroups {
+    pub fn resize_canvas_if_changed(&mut self, ctx: &GpuContext) {
+        let old_size = self.result_texture.get_size();
+        let new_size = Extent3d {
+            width: ctx.size.width,
+            height: ctx.size.height,
+            depth_or_array_layers: 1,
+        };
+
+        if old_size != new_size {
+            self.result_texture.resize(
+                ctx, new_size
+            );
+
+            let num_pixels = (ctx.size.width * ctx.size.height) as usize;
+            self.accumulation_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Accumulation Buffer"),
+                contents: bytemuck::cast_slice(&vec![[0.0f32; 4]; num_pixels]),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
+            });
+            
+            
+            self.shader_bind_groups = Self::generate_texture_bind_group(ctx, &self.result_texture, &self.accumulation_buffer, &self.texture_sampler);
+        } 
+    }
+
+    pub fn reset_accumulation(&self, ctx: &GpuContext) {
+        let num_pixels = (ctx.size.width * ctx.size.height) as usize;
+        ctx.queue.write_buffer(
+            &self.accumulation_buffer,
+            0,
+            bytemuck::cast_slice(&vec![[0.0f32; 4]; num_pixels])
+        );
+    }
+
+    fn generate_texture_bind_group(ctx: &GpuContext, draw_texture: &Texture, accumulation_buffer: &Buffer, texture_sampler: &Sampler) -> PathTracerShaderBindGroups {
         let compute_bind_group_layout = ctx.device.create_bind_group_layout(&BindGroupLayoutDescriptor {
             label: Some("Compute Bind Group Layout"),
             entries: &[
@@ -250,6 +277,16 @@ impl PathTracer {
                         access: wgpu::StorageTextureAccess::WriteOnly,
                         format: Rgba32Float,
                         view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None
                 },
@@ -284,7 +321,11 @@ impl PathTracer {
             entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: BindingResource::TextureView(texture.get_view()),
+                    resource: BindingResource::TextureView(draw_texture.get_view()),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: accumulation_buffer.as_entire_binding(),
                 }
             ],
         });
@@ -295,7 +336,7 @@ impl PathTracer {
             entries: &[
                 BindGroupEntry {
                     binding: 0,
-                    resource: BindingResource::TextureView(texture.get_view())
+                    resource: BindingResource::TextureView(draw_texture.get_view())
                 },
                 BindGroupEntry {
                     binding: 1,

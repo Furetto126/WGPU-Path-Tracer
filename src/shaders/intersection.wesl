@@ -1,13 +1,19 @@
 import package::path_tracer::Ray;
-import package::primitives::{Material, Sphere, Triangle, SPHERES, TRIANGLES};
+import package::scene::{
+    PbrMaterial, Sphere, Triangle,
+    vertices, uvs, indices, triangle_materials
+};
 import package::constants::{EPSILON, INFINITY};
+
+@group(2) @binding(2) var<uniform> is_scene_empty: u32;
 
 struct Hit {
     hasHit: bool,
     distance: f32,
     point: vec3f,
     normal: vec3f,
-    material: Material
+    material: u32,
+    uv: vec2f,
 }
 
 fn sphere_intersect(ray: Ray, sphere: Sphere) -> Hit {
@@ -27,7 +33,6 @@ fn sphere_intersect(ray: Ray, sphere: Sphere) -> Hit {
     if hits.y < EPSILON { return hit; }
 
     hit.hasHit = true;
-    hit.material = sphere.material;
 
     // Branch vs Branchless option, 
     // probably no performance gains after compiler optimizations :P
@@ -38,6 +43,7 @@ fn sphere_intersect(ray: Ray, sphere: Sphere) -> Hit {
     hit.distance = t;
     hit.point = ray.origin + ray.direction*t;
     hit.normal = normalize(hit.point - sphere.center);
+    hit.material = sphere.material;
 
     return hit;
 }
@@ -62,61 +68,41 @@ fn triangle_intersect(ray: Ray, triangle: Triangle) -> Hit {
     hit.distance = t;
     hit.point = ray.origin + ray.direction*t;
     hit.normal = normalize(n);
+
+    if dot(ray.direction, hit.normal) > 0.0 {
+        hit.normal = -hit.normal;
+    }
+
     hit.material = triangle.material;
+    hit.uv = vec2f(u, v);
     
     return hit;
 }
 
-fn closest_intersection(ray: Ray/*, spheres: array<Sphere>, triangles: array<Triangle>*/) -> Hit {
+fn closest_intersection(ray: Ray) -> Hit {
     var closest_hit: Hit;
     closest_hit.hasHit = false;
     closest_hit.distance = INFINITY;
 
-    for (var i: u32 = 0; i < arrayLength(SPHERES); i++ ) {
-        let sphere = SPHERES[i];
-        let current_hit = sphere_intersect(ray, sphere);
+    if is_scene_empty == 1 { return closest_hit; }
 
-        if current_hit.hasHit && current_hit.distance < closest_hit.distance {
-            closest_hit = current_hit;
-            closest_hit.point += closest_hit.normal * vec3f(0.01);
-        }
-    }
+    for (var i: u32 = 0; i < arrayLength(&indices); i+=3 ) {
+        let triangle = Triangle(
+            vertices[indices[i]],
+            vertices[indices[i+1]],
+            vertices[indices[i+2]],
+            triangle_materials[i/3u]
+        );
 
-    for (var i: u32 = 0; i < arrayLength(TRIANGLES); i++ ) {
-        let triangle = TRIANGLES[i];
         let current_hit = triangle_intersect(ray, triangle);
-
         if current_hit.hasHit && current_hit.distance < closest_hit.distance {
             closest_hit = current_hit;
             closest_hit.point += closest_hit.normal * vec3f(0.01);
-        }
-    }
-
-    return closest_hit;
-}
-
-fn closest_intersection_fixed(ray: Ray) -> Hit {
-    var closest_hit: Hit;
-    closest_hit.hasHit = false;
-    closest_hit.distance = INFINITY;
-
-    for (var i = 0u; i < 5; i++ ) {
-        let sphere = SPHERES[i];
-        let current_hit = sphere_intersect(ray, sphere);
-
-        if current_hit.hasHit && current_hit.distance < closest_hit.distance {
-            closest_hit = current_hit;
-            closest_hit.point += closest_hit.normal * vec3f(0.01);
-        }
-    }
-
-    for (var i = 0u; i < 2; i++ ) {
-        let triangle = TRIANGLES[i];
-        let current_hit = triangle_intersect(ray, triangle);
-
-        if current_hit.hasHit && current_hit.distance < closest_hit.distance {
-            closest_hit = current_hit;
-            closest_hit.point += closest_hit.normal * vec3f(0.01);
+            
+            let w = 1.0 - current_hit.uv.x - current_hit.uv.y;
+            closest_hit.uv = uvs[indices[i]] * w
+               + uvs[indices[i+1]] * current_hit.uv.x
+               + uvs[indices[i+2]] * current_hit.uv.y;
         }
     }
 
