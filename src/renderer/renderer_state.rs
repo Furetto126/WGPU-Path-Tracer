@@ -9,10 +9,12 @@ use crate::{renderer::{GpuContext, PathTracer, renderer_uniforms::{RendererUnifo
 pub struct RendererState {
     gpu_context: GpuContext,
     path_tracer: PathTracer,
-
     scene: Scene,
-
     renderer_uniforms: RendererUniformsBundle,
+
+    timer: f32,
+    frames: u32,
+    fps: f32
 }
 
 impl RendererState {
@@ -20,14 +22,14 @@ impl RendererState {
         let gpu_context = GpuContext::new(window).await?;
         let camera = Camera::new(
             &gpu_context,
-            (-278.0, 274.4, 800.0).into(),
+            (0.0, 0.0, 5.0).into(),
             (0.0, 0.0, -1.0).into(),
             45.0,
             gpu_context.size.width as f32 / gpu_context.size.height as f32 
         );
 
         let mut scene = Scene::new(&gpu_context, camera);
-        scene.load_model(&gpu_context, "assets/CornellBox.gltf")?;
+        scene.load_model(&gpu_context, "assets/DamagedHelmet.glb")?;
 
         let compute_shader = gpu_context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Shader"),
@@ -35,13 +37,12 @@ impl RendererState {
         });
         let display_shader = gpu_context.device.create_shader_module(include_wgsl!("../shaders/display.wgsl"));
 
-        let mut renderer_uniforms = RendererUniformsBundle::new(
+        let renderer_uniforms = RendererUniformsBundle::new(
             &gpu_context, 
             RendererUniforms {
-                frame: 1,
+                frame: 0,
             }
         );
-        renderer_uniforms.update_is_scene_empty(&gpu_context, scene.is_empty());
 
         let path_tracer = PathTracer::new(
             &gpu_context,
@@ -59,6 +60,9 @@ impl RendererState {
             path_tracer,
             scene,    
             renderer_uniforms,
+            timer: 0.0,
+            frames: 0,
+            fps: 0.0
         })
     }
 
@@ -80,7 +84,6 @@ impl RendererState {
         let mut new_val = self.renderer_uniforms.value;
         new_val.frame += 1;
         self.renderer_uniforms.update_unforms(&self.gpu_context, new_val);
-        self.renderer_uniforms.update_is_scene_empty(&self.gpu_context, self.scene.is_empty());
     } 
 
     pub fn render(&mut self) -> anyhow::Result<()> {

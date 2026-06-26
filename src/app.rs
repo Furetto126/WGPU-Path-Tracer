@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use winit::{application::ApplicationHandler, event::{KeyEvent, WindowEvent}, event_loop::ActiveEventLoop, keyboard::PhysicalKey, window::Window};
 
@@ -6,12 +6,22 @@ use crate::renderer::RendererState;
 
 pub struct App {
     state: Option<RendererState>,
+
+    timer: f32,
+    last_render_time: Instant,
+    frame_count: u32,
+    current_fps: f32
 }
 
 impl App {
     pub fn new() -> Self {
+        print!("\x1B[2J");
         Self {
             state: None,
+            timer: 0.0,
+            last_render_time: Instant::now(),
+            frame_count: 0,
+            current_fps: 0.0
         }
     }
 }
@@ -43,6 +53,21 @@ impl ApplicationHandler<RendererState> for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => state.resize(size.width, size.height),
             WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                let delta_time = now.duration_since(self.last_render_time).as_secs_f32();
+                self.last_render_time = now;
+
+                self.timer += delta_time;
+                self.frame_count += 1;
+
+                if self.timer > 1.0 {
+                    self.current_fps = self.frame_count as f32 / self.timer;
+                    self.frame_count = 0;
+                    self.timer -= 1.0;
+
+                    println!("FPS: {:.2}", self.current_fps);
+                }
+
                 state.update();
                 match state.render() {
                     Ok(_) => {},

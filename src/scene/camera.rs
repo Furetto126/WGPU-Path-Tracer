@@ -106,14 +106,13 @@ impl Camera {
     }
 
     pub fn update(&mut self, ctx: &GpuContext) {
-        //if self.camera_controller.update_transform(&mut self.transform) {
-            self.camera_uniform.update(&self.transform, &self.options);
+        let _ = self.camera_controller.update_transform(&mut self.transform);
+        self.camera_uniform.update(&self.transform, &self.options);
 
-            ctx.queue.write_buffer(
-                &self.camera_buffer,
-                0,
-                bytemuck::cast_slice(&[self.camera_uniform]));
-        //}
+        ctx.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]));
     }
 }
 

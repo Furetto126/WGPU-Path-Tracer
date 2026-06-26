@@ -3,11 +3,10 @@ use winit::event_loop::EventLoop;
 use crate::app::App;
 
 mod app;
-
 mod renderer;
 mod scene;
-
 mod texture;
+mod utils;
 
 fn main() {
     run().unwrap();

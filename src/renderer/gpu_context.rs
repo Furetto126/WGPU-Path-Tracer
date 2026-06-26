@@ -44,7 +44,10 @@ impl GpuContext {
             .request_device(&DeviceDescriptor {
                 label: None,
                 required_features: features,
-                required_limits: Default::default(),
+                required_limits: wgpu::Limits {
+                    max_storage_buffers_per_shader_stage: 16,
+                    ..Default::default()
+                },
                 experimental_features: ExperimentalFeatures::disabled(),
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off,

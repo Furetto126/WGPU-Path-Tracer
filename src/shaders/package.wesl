@@ -1,6 +1,9 @@
 import package::path_tracer;
+import package::constants::INFINITY;
 import package::random::{PCG_Hash, sobol_float};
 import package::tonemap;
+
+import package::scene::{materials};
 
 @group(0) @binding(0) var out_tex: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(1) var<storage, read_write> accumulation_buffer: array<vec4f>;
@@ -22,9 +25,6 @@ struct RendererUniforms {
 }
 @group(2) @binding(1) var<storage, read> sobol: SobolDirections;*/
 
-// In intersection.wesl
-// @group(2) @binding(2) var<uniform> is_scene_empty: u32;
-
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3u) {
     let resolution = textureDimensions(out_tex);
@@ -42,11 +42,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // It should not be altered by frame count, time, etc.,
     // nor be overwritten after hashing function calls.
     let pixel_seed = PCG_Hash(((id.x*id.x) ^ (id.y * id.x)) + id.y);
+
+    const NUM_RAYS = 1;
     
-    var sobol_index = uniforms.frame;
+    var sobol_index = uniforms.frame * NUM_RAYS;
 
     var sample_bucket = vec3f(0.0);
-    const NUM_RAYS = 10;
     for (var i = 0u; i < NUM_RAYS; i++) {
         var sobol_dimension = 0u;
         
@@ -61,7 +62,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         rayWorld /= rayWorld.w;
 
         var rayDir = normalize(rayWorld.xyz - camera.cam_pos);
-        var eyeRay = path_tracer::Ray(camera.cam_pos, rayDir);
+        var eyeRay = path_tracer::Ray(camera.cam_pos, rayDir, 0.001, INFINITY);
 
         sample_bucket += path_tracer::trace_path(eyeRay, pixel_seed, sobol_index, sobol_dimension);
 
@@ -75,5 +76,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     accumulation_buffer[pixel_idx] += vec4f(sample_average, 1.0);
 
     let accumulated_result = accumulation_buffer[pixel_idx].rgb / accumulation_buffer[pixel_idx].a;
-    textureStore(out_tex, vec2i(id.xy), vec4f(accumulated_result, 1.0));
+    //textureStore(out_tex, vec2i(id.xy), vec4f(accumulated_result, 1.0));
+
+    
+    textureStore(out_tex, vec2i(id.xy), vec4f(sample_average, 1.0));
 }

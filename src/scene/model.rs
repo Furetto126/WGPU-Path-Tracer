@@ -16,7 +16,7 @@ impl Model {
             .default_scene()
             .unwrap_or_else(|| document.scenes().next().expect("gltf has no scenes"));
 
-        let triangles_data = TrianglesData::load_from_scene(scene, &buffers);
+        let triangles_data = TrianglesData::load_from_scene(scene, &buffers, &materials);
 
         Ok(Self { triangles_data, materials })
     }
@@ -41,7 +41,8 @@ pub struct PbrMaterial {
 
 impl PbrMaterial {
     pub fn extract_materials(document: &gltf::Document) -> Vec<PbrMaterial> {
-        document
+        let mut materials: Vec<PbrMaterial> = 
+            document
             .materials()
             .map(|mat| {
                 let pbr = mat.pbr_metallic_roughness();
@@ -57,7 +58,13 @@ impl PbrMaterial {
                     _pad: [0.0; 3]
                 }
             })
-            .collect()
+            .collect();
+
+        if materials.is_empty() {
+            materials.push(PbrMaterial::default());
+        }
+
+        materials
     }
 }
 
@@ -66,21 +73,40 @@ pub struct TrianglesData {
     pub vertices: Vec<[f32; 4]>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
+    pub emissive_triangles: Vec<u32>,
 
     pub triangles_material: Vec<u32>
 }
 
 impl TrianglesData {
-    pub fn load_from_scene(scene: gltf::Scene, buffers: &[gltf::buffer::Data]) -> TrianglesData {
+    pub fn load_from_scene(scene: gltf::Scene, buffers: &[gltf::buffer::Data], pbr_materials: &Vec<PbrMaterial>) -> TrianglesData {
         let mut triangles_data = TrianglesData { 
             vertices: vec![],
             uvs: vec![],
             indices: vec![],
+            emissive_triangles: vec![],
             triangles_material: vec![]
         };
 
         for node in scene.nodes() {
-            Self::walk_node(&node, Matrix4::identity(), buffers, &mut triangles_data);
+            Self::walk_node(&node, Matrix4::identity(), buffers, pbr_materials, &mut triangles_data);
+        }
+
+        // Fill with dummy / unimportant data if not present
+        if triangles_data.uvs.len() < triangles_data.vertices.len() {
+            triangles_data.uvs.resize(triangles_data.vertices.len(), [0.0; 2]);
+        }
+
+        if triangles_data.indices.is_empty() {
+            triangles_data.indices = (0..triangles_data.vertices.len() as u32).collect();
+        }
+
+        if triangles_data.emissive_triangles.is_empty() {
+            triangles_data.emissive_triangles.push(!0);
+        }
+
+        if triangles_data.triangles_material.len() < triangles_data.indices.len().div(3) {
+            triangles_data.triangles_material.resize(triangles_data.indices.len().div(3), !0);
         }
 
         triangles_data
@@ -90,6 +116,7 @@ impl TrianglesData {
         node: &gltf::Node,
         parent_world: Matrix4<f32>,
         buffers: &[gltf::buffer::Data],
+        pbr_materials: &Vec<PbrMaterial>,
         triangles_data: &mut TrianglesData,
     ) {
         let local: Matrix4<f32> = node.transform().matrix().into();
@@ -115,15 +142,25 @@ impl TrianglesData {
 
                 let indices: Vec<u32> = reader
                     .read_indices()
-                    .map(|i| i.into_u32().collect())
+                    .map(|i| i.into_u32().map(|idx| idx + triangles_data.vertices.len() as u32).collect())
                     .unwrap_or_default();
 
                 let material_index = prim.material().index().map(|i| i as u32).unwrap_or(!0);
 
-                let index_offset = triangles_data.vertices.len() as u32;
+                let base_triangle = (triangles_data.indices.len() / 3) as u32;
+                let triangle_count = (indices.len() / 3) as u32;
+
                 triangles_data.vertices.extend_from_slice(&transformed_vertices);
                 triangles_data.uvs.extend_from_slice(&uvs);
-                triangles_data.indices.extend(indices.iter().map(|i| i + index_offset));
+                triangles_data.indices.extend(indices.iter());
+
+                let em_f = pbr_materials[material_index as usize].emissive_factor;
+                if em_f[0] != 0.0 || em_f[1] != 0.0 || em_f[2] != 0.0 || pbr_materials[material_index as usize].emissive_texture != !0 {
+                    for tri_offset in 0..triangle_count {
+                        triangles_data.emissive_triangles.push(base_triangle + tri_offset);
+                    }
+                }
+
                 triangles_data.triangles_material.extend(
                     std::iter::repeat_n(material_index, indices.len().div(3))
                 );
@@ -131,7 +168,7 @@ impl TrianglesData {
         }
 
         for child in node.children() {
-            Self::walk_node(&child, world, buffers, triangles_data);
+            Self::walk_node(&child, world, buffers, pbr_materials, triangles_data);
         }
     }
 }
