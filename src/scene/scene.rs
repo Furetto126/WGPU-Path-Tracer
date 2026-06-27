@@ -1,6 +1,8 @@
 use wgpu::util::DeviceExt;
 
-use crate::{renderer::GpuContext, scene::{BVH, BvhNode, Camera, Model, model::PbrMaterial}};
+use crate::{renderer::GpuContext, scene::{BVH, BvhNode, Camera, Model, model::{ModelTexture, PbrMaterial}}, texture::Texture};
+
+const MAX_TEXTURES: usize = 512;
 
 pub struct Scene {
     pub camera: Camera,
@@ -14,7 +16,7 @@ impl Scene {
     }
 
     pub fn load_model(&mut self, ctx: &GpuContext, path: &str) -> anyhow::Result<()> {
-        let model = Model::load_static_scene(path)?;
+        let model = Model::load_static_model(ctx, path)?;
         self.models.push(model);
         self.build_buffers(ctx);
         Ok(())
@@ -27,14 +29,16 @@ impl Scene {
         let mut emissive_triangles = vec![];
         let mut triangle_materials = vec![];
         let mut materials = vec![];
+        let mut textures = vec![];
         // TODO: This will only work for one model,
-        //       a TLAS implementation must be created!
+        //       a TLAS implementation MUST be created!
         let mut bvh_nodes = vec![];
         let mut bvh_triangle_indices = vec![];
 
         let mut vertex_offset = 0;
         let mut triangle_offset = 0;
         let mut material_offset = 0;
+        let mut texture_offset = 0;
         for model in &self.models {
             let td = &model.triangles_data;
 
@@ -50,7 +54,18 @@ impl Scene {
             
             vertices.extend_from_slice(&td.vertices);
             uvs.extend_from_slice(&td.uvs);
-            materials.extend_from_slice(&model.materials);
+            //materials.extend_from_slice(&model.materials);
+            
+            for mut mat in model.materials.iter().cloned() {
+                if mat.base_color_texture != !0 { mat.base_color_texture += texture_offset; }
+                if mat.metallic_roughness_texture != !0 { mat.metallic_roughness_texture += texture_offset; }
+                if mat.emissive_texture != !0 { mat.emissive_texture += texture_offset; }
+                if mat.normal_texture != !0 { mat.normal_texture += texture_offset; }
+
+                materials.push(mat);
+            }
+            
+            textures.extend(model.textures.clone());
             
             let mut bvh = BVH::new(model);
             bvh.build();
@@ -60,6 +75,7 @@ impl Scene {
             vertex_offset += td.vertices.len() as u32;
             triangle_offset += td.indices.len() as u32 / 3;
             material_offset += model.materials.len() as u32;
+            texture_offset += model.textures.len() as u32;
         }
 
         // If all models had no emissive triangle, then 
@@ -106,6 +122,7 @@ impl Scene {
             emissive_triangles,
             triangle_materials,
             materials,
+            textures,
             bvh_nodes,
             bvh_triangle_indices
         );
@@ -122,6 +139,10 @@ pub struct SceneBuffers {
     pub emissive_triangles_buffer: wgpu::Buffer,
     pub material_index_buffer: wgpu::Buffer,
     pub material_buffer: wgpu::Buffer,
+
+    pub textures: Vec<ModelTexture>,
+    pub textures_sampler: wgpu::Sampler,
+
     pub bvh_nodes_buffer: wgpu::Buffer,
     pub bvh_triangle_indices_buffer: wgpu::Buffer,
 
@@ -140,13 +161,14 @@ impl SceneBuffers {
         emissive_triangles: Vec<u32>,
         material_indices_per_triangle: Vec<u32>,
         materials: Vec<PbrMaterial>,
+        textures: Vec<ModelTexture>,
         bvh_nodes: Vec<BvhNode>,
         bvh_triangle_indices: Vec<u32>
     ) -> Self {
         let scene_empty_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Is Scene Empty Buffer"),
             contents: bytemuck::cast_slice(&[is_scene_empty as u32; 1]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE,
         });
         let vertex_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -166,7 +188,7 @@ impl SceneBuffers {
         let emissive_triangles_count_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Emissive Triangles Count Buffer"),
             contents: bytemuck::cast_slice(&[emissive_triangles_count; 1]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE,
         });
         let emissive_triangles_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Emissive Indices Buffer"),
@@ -183,11 +205,27 @@ impl SceneBuffers {
             contents: bytemuck::cast_slice(&materials),
             usage: wgpu::BufferUsages::STORAGE,
         });
+
+        let dummy_texture = Texture::new_dummmy(ctx);
+        let mut textures_views: Vec<&wgpu::TextureView> = textures
+            .iter()
+            .map(|t| t.texture.get_view())
+            .collect();
+        textures_views.resize(MAX_TEXTURES, dummy_texture.get_view());
+        let textures_sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            ..Default::default()
+        });
         let bvh_nodes_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Nodes Buffer"),
             contents: bytemuck::cast_slice(&bvh_nodes),
             usage: wgpu::BufferUsages::STORAGE,
         });
+
         let bvh_triangle_indices_buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("BVH Triangle Indices Buffer"),
             contents: bytemuck::cast_slice(&bvh_triangle_indices),
@@ -234,10 +272,18 @@ impl SceneBuffers {
                 },
                 wgpu::BindGroupEntry {
                     binding: 8,
-                    resource: bvh_nodes_buffer.as_entire_binding()
+                    resource: wgpu::BindingResource::TextureViewArray(textures_views.as_slice()),
                 },
                 wgpu::BindGroupEntry {
                     binding: 9,
+                    resource: wgpu::BindingResource::Sampler(&textures_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: bvh_nodes_buffer.as_entire_binding()
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
                     resource: bvh_triangle_indices_buffer.as_entire_binding()
                 },
             ],
@@ -252,6 +298,8 @@ impl SceneBuffers {
             emissive_triangles_buffer,
             material_index_buffer,
             material_buffer,
+            textures,
+            textures_sampler,
             bvh_nodes_buffer,
             bvh_triangle_indices_buffer,
             bind_group_layout,
@@ -270,6 +318,7 @@ impl SceneBuffers {
             vec![0, 1, 2],
             vec![0],
             vec![PbrMaterial::default()],
+            vec![ModelTexture { texture: Texture::new_dummmy(ctx) }; MAX_TEXTURES],
             vec![BvhNode::default()],
             vec![0, 1, 2]
         )
@@ -284,7 +333,7 @@ impl SceneBuffers {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -328,7 +377,7 @@ impl SceneBuffers {
                     binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size: None,
                     },
@@ -367,9 +416,27 @@ impl SceneBuffers {
                     },
                     count: None
                 },
-                // BVH Nodes
+                // Textures Views
                 wgpu::BindGroupLayoutEntry {
                     binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: std::num::NonZeroU32::new(MAX_TEXTURES as u32)
+                },
+                // Textures Sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None
+                },
+                // BVH Nodes
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -380,7 +447,7 @@ impl SceneBuffers {
                 },
                 // BVH Triangle Indices
                 wgpu::BindGroupLayoutEntry {
-                    binding: 9,
+                    binding: 11,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },

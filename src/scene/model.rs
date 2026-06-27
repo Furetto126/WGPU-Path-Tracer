@@ -1,15 +1,20 @@
-use std::ops::Div;
+use std::{collections::{HashMap, HashSet}, ops::Div};
 
+use anyhow::bail;
 use cgmath::{Matrix4, Point2, Point3, SquareMatrix, Transform};
+use wgpu::util::DeviceExt;
+
+use crate::{renderer::GpuContext, texture::Texture};
 
 pub struct Model {
     pub triangles_data: TrianglesData,
-    pub materials: Vec<PbrMaterial>
+    pub materials: Vec<PbrMaterial>,
+    pub textures: Vec<ModelTexture>
 }
 
 impl Model {
-    pub fn load_static_scene(path: &str) -> anyhow::Result<Self> {
-        let (document, buffers, _images) = gltf::import(path)?;
+    pub fn load_static_model(ctx: &GpuContext, path: &str) -> anyhow::Result<Self> {
+        let (document, buffers, images) = gltf::import(path)?;
         let materials = PbrMaterial::extract_materials(&document);
 
         let scene = document
@@ -18,7 +23,79 @@ impl Model {
 
         let triangles_data = TrianglesData::load_from_scene(scene, &buffers, &materials);
 
-        Ok(Self { triangles_data, materials })
+        let unique_image_indices: Vec<u32> = materials.iter()
+            .flat_map(|m| [m.base_color_texture, m.emissive_texture, m.metallic_roughness_texture, m.normal_texture])
+            .filter(|&i| i != !0)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let remap: HashMap<u32, u32> = unique_image_indices.iter()
+            .enumerate()
+            .map(|(new_idx, &old_idx)| (old_idx, new_idx as u32))
+            .collect();
+
+        let mut textures = vec![];
+        for &img_idx in &unique_image_indices {
+            let ty = materials.iter().find_map(|m| {
+                if m.base_color_texture == img_idx { Some(ModelTextureType::BaseColor) }
+                else if m.emissive_texture == img_idx { Some(ModelTextureType::Emissive) }
+                else if m.metallic_roughness_texture == img_idx { Some(ModelTextureType::MetallicRoughness) }
+                else if m.normal_texture == img_idx { Some(ModelTextureType::Normal) }
+                else { None }
+            }).unwrap(); // TODO: Propagate error instead of panic.
+            textures.push(ModelTexture::new(ctx, &images[img_idx as usize], ty)?);
+        }
+
+        let remap_idx = |i: u32| if i == !0 { !0 } else { remap[&i] };
+        let materials: Vec<PbrMaterial> = materials.into_iter().map(|mut m| {
+            m.base_color_texture = remap_idx(m.base_color_texture);
+            m.emissive_texture = remap_idx(m.emissive_texture);
+            m.metallic_roughness_texture = remap_idx(m.metallic_roughness_texture);
+            m.normal_texture = remap_idx(m.normal_texture);
+            m
+        })
+        .collect();
+
+        Ok(Self { triangles_data, materials, textures })
+    }
+}
+
+pub enum ModelTextureType {
+    BaseColor, Emissive, MetallicRoughness, Normal
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelTexture {
+    pub texture: Texture,
+}
+
+impl ModelTexture {
+    pub fn new(ctx: &GpuContext, image: &gltf::image::Data, ty: ModelTextureType) -> anyhow::Result<Self> {
+        let rgba: Vec<u8> = match image.format {
+            gltf::image::Format::R8G8B8 => {
+                image.pixels.chunks_exact(3)
+                    .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+                    .collect()
+            }
+            gltf::image::Format::R8G8B8A8 => image.pixels.clone(),
+            gltf::image::Format::R8 => image.pixels.iter().flat_map(|&r| [r, 0, 0, 255]).collect(),
+            _ => bail!("Unsupported image format {:?}", image.format)
+        };
+
+        let texture_format = match ty {
+            ModelTextureType::BaseColor | ModelTextureType::Emissive => wgpu::TextureFormat::Rgba8UnormSrgb,
+            ModelTextureType::MetallicRoughness | ModelTextureType::Normal => wgpu::TextureFormat::Rgba8Unorm
+        };
+
+        let size = wgpu::Extent3d {
+            width: image.width,
+            height: image.height,
+            depth_or_array_layers: 1,
+        };
+        let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+
+        Ok(Self { texture: Texture::new_with_data(ctx, size, usage, texture_format, &rgba) })
     }
 }
 
@@ -26,16 +103,16 @@ impl Model {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable, Default)]
 pub struct PbrMaterial {
     base_color_factor: [f32; 4],
-    base_color_texture: u32,
+    pub base_color_texture: u32,
 
     metallic_factor: f32,
     roughness_factor: f32,
-    metallic_roughness_texture: u32,
+    pub metallic_roughness_texture: u32,
 
     emissive_factor: [f32; 3],
-    emissive_texture: u32,
+    pub emissive_texture: u32,
 
-    normal_texture: u32,
+    pub normal_texture: u32,
     _pad: [f32; 3]
 }
 
@@ -48,13 +125,21 @@ impl PbrMaterial {
                 let pbr = mat.pbr_metallic_roughness();
                 PbrMaterial {
                     base_color_factor: pbr.base_color_factor(),
-                    base_color_texture: pbr.base_color_texture().map(|i| i.texture().index() as u32).unwrap_or(!0),
+                    base_color_texture: pbr.base_color_texture()
+                        .map(|i| i.texture().source().index() as u32)
+                        .unwrap_or(!0),
                     metallic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
-                    metallic_roughness_texture: pbr.metallic_roughness_texture().map(|i| i.texture().index() as u32).unwrap_or(!0),
+                    metallic_roughness_texture: pbr.metallic_roughness_texture()
+                        .map(|i| i.texture().source().index() as u32)
+                        .unwrap_or(!0),
                     emissive_factor: mat.emissive_factor(),
-                    emissive_texture: mat.emissive_texture().map(|i| i.texture().index() as u32).unwrap_or(!0),
-                    normal_texture: mat.normal_texture().map(|i| i.texture().index() as u32).unwrap_or(!0),
+                    emissive_texture: mat.emissive_texture()
+                        .map(|i| i.texture().source().index() as u32)
+                        .unwrap_or(!0),
+                    normal_texture: mat.normal_texture()
+                        .map(|i| i.texture().source().index() as u32)
+                        .unwrap_or(!0),
                     _pad: [0.0; 3]
                 }
             })

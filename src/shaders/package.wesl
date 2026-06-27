@@ -76,8 +76,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     accumulation_buffer[pixel_idx] += vec4f(sample_average, 1.0);
 
     let accumulated_result = accumulation_buffer[pixel_idx].rgb / accumulation_buffer[pixel_idx].a;
-    //textureStore(out_tex, vec2i(id.xy), vec4f(accumulated_result, 1.0));
+    textureStore(out_tex, vec2i(id.xy), vec4f(accumulated_result, 1.0));
 
-    
-    textureStore(out_tex, vec2i(id.xy), vec4f(sample_average, 1.0));
+    // No accum shown
+    //textureStore(out_tex, vec2i(id.xy), vec4f(sample_average, 1.0));
 }

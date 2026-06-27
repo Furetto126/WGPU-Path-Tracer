@@ -1,6 +1,6 @@
 import package::constants::{MAX_U32, EPSILON, INV_PI};
 import package::scene::{
-    Sphere, Triangle, PbrMaterial, materials
+    Sphere, Triangle, PbrMaterial, materials, textures, textures_sampler, get_normal_world_space
 };
 import package::intersection::{closest_intersection, is_light_visible};
 import package::brdf;
@@ -40,18 +40,38 @@ fn trace_path(ray_in: Ray, pixel_seed: u32, sobol_index: u32, sobol_dim: u32) ->
 
         let material = materials[hit.material];
 
-        return material.base_color_factor.xyz;
+        // Sample values from factor or from texture, if present
+        // -----------------------------------------------------
+        var base_color = material.base_color_factor.xyz;
+        if material.base_color_texture != MAX_U32 {
+            base_color *= textureSampleLevel(textures[material.base_color_texture], textures_sampler, hit.uv, 0.0).xyz;
+        }
+
+        var emissive = material.emissive_factor;
+        if material.emissive_texture != MAX_U32 {
+            emissive *= textureSampleLevel(textures[material.emissive_texture], textures_sampler, hit.uv, 0.0).xyz;
+        }
+
+        var metallic_roughness = vec2f(material.metallic_factor, material.roughness_factor);
+        if material.metallic_roughness_texture != MAX_U32 {
+            metallic_roughness *= textureSampleLevel(textures[material.metallic_roughness_texture], textures_sampler, hit.uv, 0.0).yz;
+        }
+
+        var normal = hit.normal;
+        /*if material.normal_texture != MAX_U32 {
+            normal = get_normal_world_space(hit);
+        }*/
 
         if prev_light_pdf_direction < 0.001 {
-            color += throughput * material.emissive_factor;
+            color += throughput * emissive;
         }
 
         let w_o = -ray.direction;
-        let normal = hit.normal;
-        let roughness = material.roughness_factor;
+        let metallic = metallic_roughness.x;
+        let roughness = metallic_roughness.y;
 
-        let f0 = mix(vec3f(0.04), material.base_color_factor.xyz, material.metallic_factor); 
-        let diffuse_albedo = material.base_color_factor.xyz * (1.0 - material.metallic_factor);
+        let f0 = mix(vec3f(0.04), base_color, metallic); 
+        let diffuse_albedo = base_color * (1.0 - metallic);
 
         // MIS weights should be:
         // a(0.5*p_cosine + 0.5*p_light) + (1 - a)*p_ggx
@@ -60,7 +80,7 @@ fn trace_path(ray_in: Ray, pixel_seed: u32, sobol_index: u32, sobol_dim: u32) ->
         let q_ggx     = 1.0 - roughness;
 
         let light_sample = brdf::light_sample(
-            hit.point + hit.normal*0.001,
+            hit.point + normal*0.001,
             pixel_seed, sobol_index, &sobol_dimension
         );
         let light_visibility = is_light_visible(light_sample);
@@ -81,7 +101,17 @@ fn trace_path(ray_in: Ray, pixel_seed: u32, sobol_index: u32, sobol_dim: u32) ->
                 let f_total_nee = f_lambert_nee + f_ggx_nee;
 
                 let contribution = (f_total_nee * cos_theta_light) / pdf_total_nee;
-                let emissive_factor = materials[light_visibility.hit.material].emissive_factor;
+                
+                let emissive_material = materials[light_visibility.hit.material]; 
+                var emissive_factor = emissive_material.emissive_factor;
+                if emissive_material.emissive_texture != MAX_U32 {
+                    emissive_factor *= textureSampleLevel(
+                        textures[emissive_material.emissive_texture],
+                        textures_sampler,
+                        light_visibility.hit.uv, 0.0
+                    ).xyz;
+                }
+
                 color += throughput * emissive_factor * contribution;
             }
         }

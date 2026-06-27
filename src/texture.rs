@@ -1,4 +1,4 @@
-use wgpu::{Extent3d, TextureUsages, TextureView};
+use wgpu::{Extent3d, TextureFormat, TextureUsages, TextureView, util::DeviceExt};
 
 use crate::renderer::GpuContext;
 
@@ -38,6 +38,42 @@ impl Texture {
         }
     }
 
+    pub fn new_with_data(ctx: &GpuContext, size: Extent3d, usage: TextureUsages, format: TextureFormat, data: &[u8]) -> Self {
+        let texture = ctx.device.create_texture_with_data(
+            &ctx.queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: format,
+                usage: usage,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            data
+        );
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        Self {
+            texture,
+            view,
+            size,
+            usage,
+        }
+    }
+
+    pub fn new_dummmy(ctx: &GpuContext) -> Self {
+        Self::new_with_data(ctx,
+            Extent3d::default(),
+            TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST, 
+            TextureFormat::Rgba8UnormSrgb,
+            &[0, 0, 0, 255]
+        )
+    }
+
     pub fn get_tex(&self) -> &wgpu::Texture {
         &self.texture
     }
@@ -50,6 +86,7 @@ impl Texture {
         self.size
     }
 
+    // TODO: Breaks for "new_with_data" created Textures.
     pub fn resize(&mut self, ctx: &GpuContext, new_size: Extent3d) {
         *self = Texture::new(ctx, new_size, self.usage);
     }

@@ -29,7 +29,7 @@ impl RendererState {
         );
 
         let mut scene = Scene::new(&gpu_context, camera);
-        scene.load_model(&gpu_context, "assets/DamagedHelmet.glb")?;
+        scene.load_model(&gpu_context, "assets/CarConcept.glb")?;
 
         let compute_shader = gpu_context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Shader"),

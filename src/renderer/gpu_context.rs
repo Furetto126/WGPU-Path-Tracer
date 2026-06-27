@@ -46,6 +46,7 @@ impl GpuContext {
                 required_features: features,
                 required_limits: wgpu::Limits {
                     max_storage_buffers_per_shader_stage: 16,
+                    max_binding_array_elements_per_shader_stage: 512,
                     ..Default::default()
                 },
                 experimental_features: ExperimentalFeatures::disabled(),
